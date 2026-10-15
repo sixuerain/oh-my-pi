@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Generate ~/.omp/agent/models.yml from the NVIDIA InferenceHub metadata API.
+"""Generate ~/.omp/agent/models.yml for omp.
 
-Mirrors sixuerain/pi's nvidia-inference-hub provider (packages/ai/src/providers/
-nvidia-inference-hub.ts): every chat-capable model in the hub catalog becomes an
-omp custom model routed to its own LiteLLM proxy URL.
+Two sources:
+1. NVIDIA InferenceHub metadata API — every chat-capable model in the hub
+   catalog becomes an omp custom model routed to its own LiteLLM proxy URL.
+2. The pi fork's ~/.pi/agent/models.json — internal providers (e.g.
+   0-local-galaxy1/2 local vLLM gateways) synced as-is (single source of
+   truth: edit models.json, then re-run this script).
 
 Requires NVIDIA_INFERENCEHUB_METADATA_KEY (catalog) and optionally
 NVIDIA_INFERENCEHUB_API_KEY / OPENAI_BASE_URL (exported in ~/.bashrc).
-
-Re-run any time the hub catalog changes:  python3 gen-nvidia-models-yml.py
 """
 
 import json
@@ -19,41 +20,50 @@ import urllib.request
 METADATA_BASE = "https://inference-backend.nvidia.com/api/v1"
 OUT_PATH = os.path.expanduser("~/.omp/agent/models.yml")
 PROVIDER_ID = "nvidia-inference-hub"
+PI_MODELS_JSON = os.path.expanduser("~/.pi/agent/models.json")
 
-# Static internal providers (from ~/.pi/agent/models.json of the pi fork)
-LOCAL_PROVIDERS = {
-    "0-local-galaxy1": {
-        "baseUrl": "http://10.32.186.146:15123/v1",
-        "models": [
-            {
-                "id": "glm-5.3-flash",
-                "name": "GLM 5.3 Flash (local vLLM)",
-                "contextWindow": 1048576,
-                "maxTokens": 32768,
-                "compat": {
-                    "supportsDeveloperRole": False,
-                    "supportsReasoningEffort": True,
-                    "maxTokensField": "max_tokens",
-                },
-            }
-        ],
-    },
-    "0-local-galaxy2": {
-        "baseUrl": "http://10.32.186.215:15123/v1",
-        "models": [
-            {
-                "id": "deepseek-v4-flash",
-                "name": "DeepSeek V4 Flash (local vLLM)",
-                "contextWindow": 1048576,
-                "maxTokens": 32768,
-                "compat": {
-                    "supportsDeveloperRole": False,
-                    "maxTokensField": "max_tokens",
-                },
-            }
-        ],
-    },
-}
+
+def load_pi_providers():
+    """Load custom providers from the pi fork's ~/.pi/agent/models.json.
+
+    Single source of truth: the pi fork owns the internal provider
+    definitions (0-local-galaxy1/2 etc.); this script converts them to
+    omp's models.yml schema. Provider-level compat is merged into each
+    model's compat (model wins); pi-only fields (thinkingLevelMap) are
+    dropped.
+    """
+    if not os.path.exists(PI_MODELS_JSON):
+        return {}
+    raw = json.load(open(PI_MODELS_JSON))
+    out = {}
+    # omp 认识的 compat 键白名单，避免未知键触发告警
+    known_compat = {
+        "supportsStore", "supportsDeveloperRole", "supportsReasoningEffort",
+        "maxTokensField", "supportsStrictMode",
+    }
+    for pid, p in raw.get("providers", {}).items():
+        pcompat = {k: v for k, v in (p.get("compat") or {}).items() if k in known_compat}
+        models = []
+        for m in p.get("models", []):
+            compat = dict(pcompat)
+            compat.update({k: v for k, v in (m.get("compat") or {}).items() if k in known_compat})
+            models.append({
+                "id": m["id"],
+                "name": m.get("name", m["id"]),
+                "contextWindow": m.get("contextWindow", 128000),
+                "maxTokens": m.get("maxTokens", 4096),
+                "reasoning": m.get("reasoning", False),
+                "input": m.get("input", ["text"]),
+                "cost": m.get("cost", {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}),
+                "compat": compat,
+            })
+        out[pid] = {
+            "baseUrl": p["baseUrl"],
+            "apiKey": p.get("apiKey", "EMPTY"),
+            "api": p.get("api", "openai-completions"),
+            "models": models,
+        }
+    return out
 
 
 def classify_endpoint(url):
@@ -138,8 +148,8 @@ def main():
         lines.append(f"        contextWindow: {e['contextWindow']}")
         lines.append("        maxTokens: 4096")
 
-    # Static internal providers (same definition as the pi fork's models.json)
-    for pid, p in LOCAL_PROVIDERS.items():
+    # Sync custom providers from the pi fork's models.json (single source of truth)
+    for pid, p in load_pi_providers().items():
         lines.append(f"  {pid}:")
         lines.append(f"    baseUrl: {p['baseUrl']}")
         lines.append("    apiKey: EMPTY")
