@@ -20,6 +20,41 @@ METADATA_BASE = "https://inference-backend.nvidia.com/api/v1"
 OUT_PATH = os.path.expanduser("~/.omp/agent/models.yml")
 PROVIDER_ID = "nvidia-inference-hub"
 
+# Static internal providers (from ~/.pi/agent/models.json of the pi fork)
+LOCAL_PROVIDERS = {
+    "0-local-galaxy1": {
+        "baseUrl": "http://10.32.186.146:15123/v1",
+        "models": [
+            {
+                "id": "glm-5.3-flash",
+                "name": "GLM 5.3 Flash (local vLLM)",
+                "contextWindow": 1048576,
+                "maxTokens": 32768,
+                "compat": {
+                    "supportsDeveloperRole": False,
+                    "supportsReasoningEffort": True,
+                    "maxTokensField": "max_tokens",
+                },
+            }
+        ],
+    },
+    "0-local-galaxy2": {
+        "baseUrl": "http://10.32.186.215:15123/v1",
+        "models": [
+            {
+                "id": "deepseek-v4-flash",
+                "name": "DeepSeek V4 Flash (local vLLM)",
+                "contextWindow": 1048576,
+                "maxTokens": 32768,
+                "compat": {
+                    "supportsDeveloperRole": False,
+                    "maxTokensField": "max_tokens",
+                },
+            }
+        ],
+    },
+}
+
 
 def classify_endpoint(url):
     if url.endswith("/chat/completions"):
@@ -102,6 +137,29 @@ def main():
         lines.append("          cacheWrite: 0")
         lines.append(f"        contextWindow: {e['contextWindow']}")
         lines.append("        maxTokens: 4096")
+
+    # Static internal providers (same definition as the pi fork's models.json)
+    for pid, p in LOCAL_PROVIDERS.items():
+        lines.append(f"  {pid}:")
+        lines.append(f"    baseUrl: {p['baseUrl']}")
+        lines.append("    apiKey: EMPTY")
+        lines.append("    api: openai-completions")
+        lines.append("    models:")
+        for m in p["models"]:
+            lines.append(f"      - id: {m['id']}")
+            lines.append(f"        name: {m['name']}")
+            lines.append(f"        contextWindow: {m['contextWindow']}")
+            lines.append(f"        maxTokens: {m['maxTokens']}")
+            lines.append("        reasoning: true")
+            lines.append("        input: [text]")
+            lines.append("        cost:")
+            lines.append("          input: 0")
+            lines.append("          output: 0")
+            lines.append("          cacheRead: 0")
+            lines.append("          cacheWrite: 0")
+            lines.append("        compat:")
+            for ck, cv in m["compat"].items():
+                lines.append(f"          {ck}: {str(cv).lower()}")
 
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     with open(OUT_PATH, "w") as f:
